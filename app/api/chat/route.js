@@ -76,7 +76,12 @@ REGLAS DURAS
 - NUNCA ofrezcas ni prometas descuentos.
 - NUNCA des el precio como definitivo: siempre estimado, el asesor confirma segun superficie.
 - Si no sabes algo, nunca digas "no entendi"; di que un asesor puede ayudar y captura datos.
-- Cierra siempre dejando capturado el contacto o el siguiente paso.`;
+- Cierra siempre dejando capturado el contacto o el siguiente paso.
+
+════════ REGISTRO INTERNO (no visible al cliente) ════════
+Cuando ya tengas datos suficientes de un cliente (al menos nombre, y idealmente metros/interés/municipio o un contacto), agrega AL FINAL de tu mensaje, en una línea aparte, un bloque EXACTAMENTE así:
+[LEAD]{"nombre":"...","telefono":"...","interes":"cerca|camaras","metros":number_o_null,"superficie":"barda|malla|azotea|null","desnivel":true_o_false,"municipio":"...","pregunto_precio":true_o_false,"resumen":"una frase describiendo al cliente"}[/LEAD]
+Nunca menciones este bloque al cliente ni expliques que lo generas. Si aún no tienes datos suficientes, NO lo incluyas. Usa null (sin comillas) para lo que no sepas.`;
 
 export async function POST(req) {
   const expISO = process.env.DEMO_EXPIRES_AT;
@@ -142,13 +147,76 @@ export async function POST(req) {
       return NextResponse.json({ reply: "Permítame un momento, en seguida le atiendo." }, { status: 200 });
     }
 
-    const reply =
+    let reply =
       data?.content?.filter((b) => b.type === "text").map((b) => b.text).join("\n") ||
       "Permítame un momento, en seguida le atiendo.";
+
+    // Detectar y guardar el lead si Aura emitió el bloque [LEAD]
+    const leadMatch = reply.match(/\[LEAD\](.*?)\[\/LEAD\]/s);
+    if (leadMatch) {
+      reply = reply.replace(/\[LEAD\].*?\[\/LEAD\]/s, "").trim();
+      try {
+        const lead = JSON.parse(leadMatch[1]);
+        await guardarLead(lead, messages.length);
+      } catch (err) {
+        console.error("No se pudo guardar el lead:", err?.message || err);
+      }
+    }
 
     return NextResponse.json({ reply });
   } catch (e) {
     console.error("Fetch to Anthropic failed:", e?.message || e);
     return NextResponse.json({ reply: "Permítame un momento, en seguida le atiendo." }, { status: 200 });
+  }
+}
+
+// Guarda (o actualiza) el lead en Supabase vía REST
+async function guardarLead(lead, numMensajes) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) {
+    console.error("Faltan variables de Supabase para guardar lead");
+    return;
+  }
+  // Estima precio si hay metros y es cerca
+  let precio = null;
+  if (lead.interes === "cerca" && lead.metros) {
+    const q = cotizaCerco(lead.metros);
+    if (q) precio = q.total;
+  } else if (lead.interes === "camaras") {
+    precio = 11999;
+  }
+  const hora = new Date().getHours();
+  const fueraHorario = hora < 8 || hora >= 18; // fuera de L-V 8 a 6 (aprox por hora)
+
+  const registro = {
+    nombre: lead.nombre || "Cliente",
+    telefono: lead.telefono || null,
+    interes: lead.interes || "cerca",
+    metros: lead.metros ?? null,
+    superficie: lead.superficie || null,
+    desnivel: !!lead.desnivel,
+    municipio: lead.municipio || null,
+    precio,
+    pregunto_precio: !!lead.pregunto_precio,
+    mensajes: numMensajes,
+    fuera_horario: fueraHorario,
+    resumen: lead.resumen || "",
+    estado: "Nuevo",
+  };
+
+  const res = await fetch(`${url}/rest/v1/cetec_leads`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(registro),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    console.error("Error guardando lead en Supabase:", res.status, txt);
   }
 }

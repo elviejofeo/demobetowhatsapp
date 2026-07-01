@@ -1,5 +1,53 @@
 "use client";
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+
+const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SB_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+// Lee leads reales desde Supabase (REST, sin librería)
+async function fetchLeads() {
+  const res = await fetch(`${SB_URL}/rest/v1/cetec_leads?select=*&order=created_at.desc`, {
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+  });
+  if (!res.ok) throw new Error("No se pudieron leer los leads");
+  return res.json();
+}
+
+// Actualiza el estado de un lead en Supabase
+async function updateEstadoRemoto(id, estado) {
+  await fetch(`${SB_URL}/rest/v1/cetec_leads?id=eq.${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SB_KEY,
+      Authorization: `Bearer ${SB_KEY}`,
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify({ estado }),
+  });
+}
+
+// Normaliza un registro de Supabase al formato que usa el panel
+function normaliza(r) {
+  return {
+    id: r.id,
+    nombre: r.nombre || "Cliente",
+    tel: r.telefono || null,
+    interes: r.interes || "cerca",
+    metros: r.metros ?? null,
+    superficie: r.superficie || null,
+    desnivel: !!r.desnivel,
+    municipio: r.municipio || null,
+    precio: r.precio ?? null,
+    estado: r.estado || "Nuevo",
+    hora: new Date(r.created_at).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }),
+    mensajes: r.mensajes || 0,
+    pregunto_precio: !!r.pregunto_precio,
+    fueraHorario: !!r.fuera_horario,
+    resumen: r.resumen || "",
+  };
+}
+
 
 // ============================================================
 // ORQUESTA SUPPLY · Panel de Leads CETEC
@@ -72,9 +120,29 @@ function scoreLabel(s) {
 const MXN = (n) => (n ? "$" + n.toLocaleString("es-MX") : "—");
 
 export default function App() {
-  const [leads, setLeads] = useState(SEED);
+  const [leads, setLeads] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState(null);
   const [sel, setSel] = useState(null);
   const [filtro, setFiltro] = useState("Todos");
+
+  async function cargar() {
+    try {
+      const data = await fetchLeads();
+      setLeads(data.map(normaliza));
+      setError(null);
+    } catch (e) {
+      setError("No se pudieron cargar los leads. Verifica la conexión.");
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  useEffect(() => {
+    cargar();
+    const t = setInterval(cargar, 15000); // refresca cada 15s
+    return () => clearInterval(t);
+  }, []);
 
   const metrics = useMemo(() => {
     const total = leads.length;
@@ -95,12 +163,14 @@ export default function App() {
       prev.map((l) => {
         if (l.id !== id) return l;
         const i = ESTADOS.indexOf(l.estado);
-        const next = i < 3 ? ESTADOS[i + 1] : l.estado; // avanza hasta Cerrado
+        const next = i < 3 ? ESTADOS[i + 1] : l.estado;
+        updateEstadoRemoto(id, next); // persiste en Supabase
         return { ...l, estado: next };
       })
     );
   }
   function setEstado(id, estado) {
+    updateEstadoRemoto(id, estado); // persiste en Supabase
     setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, estado } : l)));
   }
 
@@ -171,7 +241,19 @@ export default function App() {
 
         {/* Lista de leads */}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {visibles.map((l) => {
+          {cargando && (
+            <div style={{ textAlign: "center", padding: 40, color: C.gris, fontSize: 14 }}>Cargando leads…</div>
+          )}
+          {error && !cargando && (
+            <div style={{ textAlign: "center", padding: 30, color: C.rojo, fontSize: 14, background: "#FDECEA", borderRadius: 12 }}>{error}</div>
+          )}
+          {!cargando && !error && visibles.length === 0 && (
+            <div style={{ textAlign: "center", padding: 40, color: C.gris, background: C.panel, borderRadius: 14, border: `1px dashed ${C.linea}` }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: C.ink, marginBottom: 6 }}>Aún no hay leads</div>
+              En cuanto Aura atienda a un cliente y capture sus datos, aparecerá aquí automáticamente.
+            </div>
+          )}
+          {!cargando && visibles.map((l) => {
             const s = getScore(l);
             return (
               <div key={l.id} className="card leadrow" style={{ background: C.bg, border: `1px solid ${C.linea}`, borderRadius: 14, padding: 16, display: "flex", alignItems: "center", gap: 16 }}>
