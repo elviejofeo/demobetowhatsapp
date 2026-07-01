@@ -40,7 +40,13 @@ export default function Page() {
         body: JSON.stringify({ messages: newMsgs }),
       });
       const data = await res.json();
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      const reply = data.reply || "Permítame un momento, en seguida le atiendo.";
+      // Delay natural: simula el tiempo de escritura humano.
+      // Base de ~600ms + tiempo por caracter (como si tecleara), con tope de 4.5s.
+      const pensar = 500 + Math.random() * 400; // pausa inicial "leyendo"
+      const escribir = Math.min(reply.length * 22, 3800); // ~22ms por caracter, máx 3.8s
+      await new Promise((r) => setTimeout(r, pensar + escribir));
+      setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch {
       setMessages((prev) => [
         ...prev,
